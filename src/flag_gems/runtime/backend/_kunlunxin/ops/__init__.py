@@ -18,6 +18,7 @@ from ._functional_sym_constrain_range_for_size import (
     _functional_sym_constrain_range_for_size,
 )
 from ._is_all_true import _is_all_true
+from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functional
 from ._thnn_fused_lstm_cell_backward_impl import _thnn_fused_lstm_cell_backward_impl
 from .abs import abs, abs_
 from .absolute import absolute
@@ -288,6 +289,7 @@ from .softmax import softmax, softmax_backward
 from .softplus import softplus
 from .softshrink import softshrink, softshrink_out
 from .sort import sort, sort_stable
+from .special_legendre_polynomial_p import special_legendre_polynomial_p
 from .special_log_softmax import special_log_softmax
 from .special_logsumexp import special_logsumexp
 from .sqrt import sqrt, sqrt_
@@ -337,6 +339,7 @@ __all__ = [
     "_functional_sym_constrain_range_for_size",
     "_euclidean_dist",
     "_is_all_true",
+    "_native_batch_norm_legit_functional",
     "_thnn_fused_lstm_cell_backward_impl",
     "_conv_depthwise2d",
     "_safe_softmax",
@@ -344,6 +347,7 @@ __all__ = [
     "soft_margin_loss",
     "soft_margin_loss_out",
     "soft_margin_loss_backward",
+    "special_legendre_polynomial_p",
     "special_log_softmax",
     "special_logsumexp",
     "softshrink",
