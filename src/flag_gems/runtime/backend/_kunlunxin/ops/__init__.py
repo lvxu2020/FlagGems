@@ -23,6 +23,7 @@ from ._thnn_fused_lstm_cell_backward_impl import _thnn_fused_lstm_cell_backward_
 from .abs import abs, abs_
 from .absolute import absolute
 from .acos import acos
+from .adaptive_max_pool2d_backward import adaptive_max_pool2d_backward
 from .add import add, add_
 from .addcdiv import addcdiv, addcdiv_, addcdiv_out
 from .addcmul import addcmul, addcmul_out
@@ -80,6 +81,7 @@ from .broadcast_to import broadcast_to
 from .cat import cat, cat_out
 from .ceil import ceil, ceil_, ceil_out
 from .celu import celu, celu_
+from .cholesky_inverse import cholesky_inverse
 from .clamp import (
     clamp,
     clamp_,
@@ -106,6 +108,7 @@ from .cummin import cummin
 from .cumprod import cumprod, cumprod_
 from .cumsum import cumsum, cumsum_out, normed_cumsum
 from .deg2rad import deg2rad, deg2rad_, deg2rad_out
+from .dequantize import dequantize
 from .diag import diag
 from .diag_embed import diag_embed
 from .diagonal import diagonal_backward
@@ -359,6 +362,7 @@ __all__ = [
     "abs_",
     "absolute",
     "acos",
+    "adaptive_max_pool2d_backward",
     "add",
     "add_",
     "addcdiv",
@@ -432,6 +436,7 @@ __all__ = [
     "ceil_out",
     "celu",
     "celu_",
+    "cholesky_inverse",
     "clamp",
     "clamp_",
     "clamp_max",
@@ -464,6 +469,7 @@ __all__ = [
     "deg2rad",
     "deg2rad_",
     "deg2rad_out",
+    "dequantize",
     "diag",
     "diag_embed",
     "diagonal_backward",
