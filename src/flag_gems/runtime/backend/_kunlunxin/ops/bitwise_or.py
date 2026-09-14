@@ -15,6 +15,7 @@
 import logging
 
 import triton
+import triton.language as tl
 from _kunlunxin.utils.codegen_config_utils import CodeGenConfig
 
 from ..utils.pointwise_dynamic import pointwise_dynamic
@@ -49,10 +50,19 @@ def bitwise_or_tensor_(A, B):
     return bitwise_or_func(A, B, out0=A)
 
 
-@pointwise_dynamic(is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")])
+@pointwise_dynamic(
+    is_tensor=[True, False], promotion_methods=[(0, 1, "DEFAULT")], config=config_
+)
 @triton.jit
 def bitwise_or_func_scalar(x, y):
-    return x | y
+    # `y` is a runtime scalar (do_not_specialize); `x | y` would promote x to
+    # i32 (int16/int32) or emit a mixed-width `arith.ori (i8, i1 splat)` (bool),
+    # both of which the XPU backend lowers far slower than the same-shape tensor
+    # kernel. Casting the scalar to a matching width is bit-identical to torch's
+    # scalar-truncation semantics (trunc(a | b) == trunc(a) | trunc(b)).
+    if x.dtype == tl.int1:
+        return (x | y.to(tl.int8)).to(tl.int1)
+    return x | y.to(x.dtype)
 
 
 def bitwise_or_scalar(A, B):
