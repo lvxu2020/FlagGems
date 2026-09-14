@@ -3,6 +3,7 @@ import logging
 import triton
 import triton.language as tl
 from _kunlunxin.utils.codegen_config_utils import CodeGenConfig
+from flag_gems.utils import tl_extra_shim
 
 from ..utils.pointwise_dynamic import pointwise_dynamic
 
@@ -23,11 +24,11 @@ config_ = CodeGenConfig(
 
 @triton.jit
 def _fmod(x, y):
-    x64 = x.to(tl.float64)
-    y64 = y.to(tl.float64)
-    quotient = x64 / y64
-    quotient = tl.where(quotient >= 0, tl.floor(quotient), -tl.floor(-quotient))
-    return x64 - y64 * quotient
+    # xpu::fmodf: exact truncating remainder (matches torch.fmod, incl. y=+-inf,
+    # x=+-inf/NaN).  The previous x - y*trunc(x/y) in fp64 was exact but ~30x
+    # slower (fp64 soft emulation) and the fp32 variant is wrong when x/y is
+    # within 1 ULP of an integer (error = |y|, fails functional tests).
+    return tl_extra_shim.fmod(x, y)
 
 
 @pointwise_dynamic(
