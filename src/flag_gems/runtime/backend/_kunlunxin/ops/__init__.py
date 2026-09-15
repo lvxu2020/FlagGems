@@ -38,6 +38,7 @@ from ._is_all_true import _is_all_true
 from ._jagged_to_padded_dense_forward import (  # noqa: F401
     _jagged_to_padded_dense_forward,
 )
+from ._masked_scale import _masked_scale
 from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functional
 from ._native_batch_norm_legit_no_training import _native_batch_norm_legit_no_training
 from ._nested_view_from_buffer_copy import _nested_view_from_buffer_copy
@@ -361,6 +362,7 @@ from .median import median, median_dim, median_dim_values, median_out
 from .min import min, min_dim
 from .minimum import minimum
 from .miopen_batch_norm_backward import miopen_batch_norm_backward
+from .mish import mish, mish_
 from .mish_backward import mish_backward
 from .mm import mm, mm_out
 from .mode import mode
@@ -636,6 +638,7 @@ __all__ = [
     "_fused_adam_",
     "_index_put_impl_",
     "_is_all_true",
+    "_masked_scale",
     "_native_batch_norm_legit_functional",
     "_native_batch_norm_legit_no_training",
     "_nested_view_from_buffer_copy",
@@ -1032,6 +1035,8 @@ __all__ = [
     "min_dim",
     "minimum",
     "miopen_batch_norm_backward",
+    "mish",
+    "mish_",
     "mish_backward",
     "mm",
     "mm_out",
