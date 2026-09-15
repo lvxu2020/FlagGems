@@ -38,6 +38,7 @@ from ._nested_view_from_buffer_copy import _nested_view_from_buffer_copy
 from ._pdist_backward import _pdist_backward
 from ._pdist_forward import _pdist_forward, pdist
 from ._prelu_kernel import _prelu_kernel  # noqa: F401
+from ._prelu_kernel_backward import _prelu_kernel_backward  # noqa: F401
 from ._scaled_dot_product_fused_attention_overrideable import (
     _scaled_dot_product_fused_attention_overrideable,
 )
@@ -616,6 +617,7 @@ __all__ = [
     "_nested_view_from_buffer_copy",
     "_pdist_backward",
     "_pdist_forward",
+    "_prelu_kernel_backward",
     "_safe_softmax",
     "_scaled_dot_product_fused_attention_overrideable",
     "_segment_reduce_backward",
