@@ -10,113 +10,46 @@ logger = logging.getLogger(__name__)
 
 
 @triton.jit
-def _lu_find_pivot_main_kernel(
-    LU,
-    PARTIAL_VALUES,
-    PARTIAL_ROWS,
-    M,
-    N,
-    K,
-    J: tl.constexpr,
-    BLOCKS: tl.constexpr,
-    BLOCK_P: tl.constexpr,
-):
-    """Per-block pivot candidate search over 64-row aligned main blocks.
-
-    Every block covers exactly 64 valid rows (blocks_full = M // 64), so no
-    masked load / no tail garbage: XPU mis-compiles tl.argmax when the masked
-    vector length is smaller than the block size (see solution notes), and the
-    block-parallel partial results are merged by _lu_finish_pivot_kernel.
-    """
-    pid = tl.program_id(0)
-    batch = pid // BLOCKS
-    block = pid % BLOCKS
-    rows = block * 64 + tl.arange(0, 64)
-    values = tl.load(LU + batch * M * N + rows * N + J)
-    candidates = tl.where(rows >= J, tl.abs(values), -1.0)
-    local = tl.argmax(candidates, axis=0)
-    tl.store(PARTIAL_VALUES + batch * BLOCK_P + block, tl.max(candidates, axis=0))
-    tl.store(
-        PARTIAL_ROWS + batch * BLOCK_P + block,
-        (block * 64 + local).to(tl.int32),
-    )
-
-
-@triton.jit
-def _lu_find_pivot_tail_kernel(
-    LU,
-    PARTIAL_VALUES,
-    PARTIAL_ROWS,
-    M,
-    N,
-    K,
-    J: tl.constexpr,
-    TAIL_START: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    SLOT: tl.constexpr,
-    BLOCK_P: tl.constexpr,
-):
-    # Tail segment: rows [TAIL_START, M), BLOCK_M == M - TAIL_START exactly.
-    batch = tl.program_id(0)
-    rows = TAIL_START + tl.arange(0, BLOCK_M)
-    values = tl.load(LU + batch * M * N + rows * N + J)
-    candidates = tl.where(rows >= J, tl.abs(values), -1.0)
-    local = tl.argmax(candidates, axis=0)
-    tl.store(PARTIAL_VALUES + batch * BLOCK_P + SLOT, tl.max(candidates, axis=0))
-    tl.store(
-        PARTIAL_ROWS + batch * BLOCK_P + SLOT,
-        (TAIL_START + local).to(tl.int32),
-    )
-
-
-@triton.jit
-def _lu_finish_pivot_kernel(
-    PARTIAL_VALUES,
-    PARTIAL_ROWS,
-    PIVOTS,
-    K,
-    J: tl.constexpr,
-    BLOCK_P: tl.constexpr,
-):
-    # BLOCK_P = next_pow2(slots); pad slots are pre-filled with -inf so the
-    # full-block argmax below selects a real slot even when slots < BLOCK_P
-    # (no masked reduce involved).
-    batch = tl.program_id(0)
-    blocks = tl.arange(0, BLOCK_P)
-    values = tl.load(PARTIAL_VALUES + batch * BLOCK_P + blocks)
-    block = tl.argmax(values, axis=0)
-    row = tl.load(PARTIAL_ROWS + batch * BLOCK_P + block)
-    tl.store(PIVOTS + batch * K + J, row + 1)
-
-
-@triton.jit
 def _lu_swap_rows_kernel(
-    LU, PIVOTS, M, N, K, J: tl.constexpr, BLOCKS: tl.constexpr, BLOCK_N: tl.constexpr
+    LU, PIVOTS, M, N, K, J, BLOCKS: tl.constexpr, BLOCK_N: tl.constexpr
 ):
+    """Swap rows J and PIVOTS[batch, J] - 1 of each batch matrix.
+
+    J is a runtime scalar (never baked in): on TritonXPU every vector index
+    must keep the form ``scalar-total + arange * stride`` and every mask the
+    pure-tail form ``arange < tail``, otherwise the store is miscompiled or
+    the device raises a kernel exception.  (The same three kernels are shared
+    with linalg_slogdet, which calls them with a per-launch constant J.)
+    """
     pid = tl.program_id(0)
     batch = pid // BLOCKS
     block = pid % BLOCKS
     columns = block * BLOCK_N + tl.arange(0, BLOCK_N)
     pivot_row = tl.load(PIVOTS + batch * K + J).to(tl.int64) - 1
     base = LU + batch * M * N
-    current = tl.load(base + J * N + columns, mask=columns < N, other=0.0)
-    pivot = tl.load(base + pivot_row * N + columns, mask=columns < N, other=0.0)
-    tl.store(base + J * N + columns, pivot, mask=columns < N)
-    tl.store(base + pivot_row * N + columns, current, mask=columns < N)
+    ntail = N - (block * BLOCK_N)
+    msk = tl.arange(0, BLOCK_N) < ntail
+    current = tl.load(base + J * N + columns, mask=msk, other=0.0)
+    pivot = tl.load(base + pivot_row * N + columns, mask=msk, other=0.0)
+    tl.store(base + J * N + columns, pivot, mask=msk)
+    tl.store(base + pivot_row * N + columns, current, mask=msk)
 
 
 @triton.jit
 def _lu_scale_column_kernel(
-    LU, M, N, J: tl.constexpr, BLOCKS: tl.constexpr, BLOCK_M: tl.constexpr
+    LU, M, N, J, BLOCKS: tl.constexpr, BLOCK_M: tl.constexpr
 ):
     pid = tl.program_id(0)
     batch = pid // BLOCKS
     block = pid % BLOCKS
-    rows = J + 1 + block * BLOCK_M + tl.arange(0, BLOCK_M)
+    rbase = (J + 1 + block * BLOCK_M) * N
+    ar = tl.arange(0, BLOCK_M)
     base = LU + batch * M * N
     pivot = tl.load(base + J * N + J)
-    values = tl.load(base + rows * N + J, mask=rows < M, other=0.0)
-    tl.store(base + rows * N + J, values / pivot, mask=rows < M)
+    tail = M - (J + 1 + block * BLOCK_M)
+    msk = ar < tail
+    values = tl.load(base + rbase + ar * N + J, mask=msk, other=0.0)
+    tl.store(base + rbase + ar * N + J, values / pivot, mask=msk)
 
 
 @triton.jit
@@ -124,7 +57,7 @@ def _lu_update_trailing_kernel(
     LU,
     M,
     N,
-    J: tl.constexpr,
+    J,
     ROWS: tl.constexpr,
     BLOCKS: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -133,14 +66,52 @@ def _lu_update_trailing_kernel(
     batch = pid // (ROWS * BLOCKS)
     row = J + 1 + (pid // BLOCKS) % ROWS
     block = pid % BLOCKS
-    columns = J + 1 + block * BLOCK_N + tl.arange(0, BLOCK_N)
+    cbase = J + 1 + block * BLOCK_N
+    ar = tl.arange(0, BLOCK_N)
     base = LU + batch * M * N
-    mask = (row < M) & (columns < N)
-    multiplier = tl.load(base + row * N + J, mask=row < M, other=0.0)
-    pivot_row = tl.load(base + J * N + columns, mask=columns < N, other=0.0)
-    offsets = base + row * N + columns
-    values = tl.load(offsets, mask=mask, other=0.0)
-    tl.store(offsets, values - multiplier * pivot_row, mask=mask)
+    ntail = N - cbase
+    msk = ar < ntail
+    multiplier = tl.load(base + row * N + J)
+    urow = tl.load(base + J * N + cbase + ar, mask=msk, other=0.0)
+    offsets = base + row * N + cbase + ar
+    values = tl.load(offsets, mask=msk, other=0.0)
+    tl.store(offsets, values - multiplier * urow, mask=msk)
+
+
+@triton.jit
+def _lu_find_pivot_kernel(
+    LU,
+    PIVOTS,
+    M,
+    N,
+    K,
+    J,
+    M2: tl.constexpr,
+    N2: tl.constexpr,
+):
+    """Pivot row for column J: max |LU[r, J]| over r in [J, M), one program
+    per batch element.
+
+    The whole column is handled in one full M2-lane vector (M2 = next_pow2(M)
+    is a per-shape constant), so the two reduces (tl.max / tl.min) stay at
+    kernel top level - tt.reduce is explicitly illegal inside runtime loops on
+    this backend.  No tl.argmax either (index-reduce is not legalized, see
+    linalg_slogdet); the pivot row is the smallest row achieving the maximum
+    (LAPACK first-tie semantics) via min(where(cands == mx, rows, M2)).
+
+    Padded rows [M, M2) of the workspace always hold 0.0 (see the caller), so
+    their candidates are 0.0 and they lose every tie against a real row; the
+    (rows < M) guard makes them -1.0 anyway.
+    """
+    batch = tl.program_id(0)
+    rows = tl.arange(0, M2)
+    vals = tl.load(LU + batch * M2 * N2 + rows * N2 + J)
+    av = tl.abs(vals)
+    cands = tl.where((rows >= J) & (rows < M), av, -1.0)
+    mx = tl.max(cands, axis=0)
+    first = tl.min(tl.where(cands == mx, rows, M2), axis=0)
+    row = tl.where(first == M2, J, first)
+    tl.store(PIVOTS + batch * K + J, (row + 1).to(tl.int32))
 
 
 def _check_linalg_lu_factor(input, pivot):
@@ -171,107 +142,69 @@ def _linalg_lu_factor(input, pivot):
             "no-pivot kernel is available"
         )
 
-    input_contiguous = input.contiguous()
-    m, n = input_contiguous.shape[-2:]
+    x = input.contiguous()
+    m, n = x.shape[-2:]
     k = min(m, n)
-    batch = input_contiguous.numel() // (m * n)
-    lu = torch.empty_like(input_contiguous)
-    lu.copy_(input_contiguous)
-    pivots = torch.empty(
-        (*input_contiguous.shape[:-2], k), device=input.device, dtype=torch.int32
-    )
-    pivot_log = torch.empty_like(pivots)
-    # Segment the pivot search into exact 64-row main blocks plus an exact
-    # tail block (tail rows = M % 64).  XPU mis-compiles tl.argmax with masked
-    # loads whose valid length is smaller than the block size, so every block
-    # covers exactly its valid rows and blocks are padded to a power of two
-    # with -inf for the final argmax merge.
-    blocks_full = m // 64
-    tail = m % 64
-    slots = blocks_full + (1 if tail else 0)
-    block_p = max(1, triton.next_power_of_2(slots))
-    partial_values = torch.full(
-        (batch, block_p), float("-inf"), device=input.device, dtype=torch.float32
-    )
-    partial_rows = torch.empty((batch, block_p), device=input.device, dtype=torch.int32)
+    batch = x.numel() // (m * n)
+    x2 = x.reshape(batch, m, n)
+    # Workspace in per-shape power-of-two dims so every kernel can take full
+    # vectors; padded rows [M, M2) are zeroed (they must lose every pivot
+    # tie), the linear index stays within int32 for the supported shapes.
+    m2 = max(2, triton.next_power_of_2(m))
+    n2 = max(2, triton.next_power_of_2(n))
+    work = torch.empty(batch, m2, n2, dtype=x.dtype, device=x.device)
+    work[:, :m, :n].copy_(x2)
+    work[:, m:, :].zero_()
+    pivots = torch.empty(batch, k, dtype=torch.int32, device=x.device)
 
-    with torch_device_fn.device(input.device):
+    with torch_device_fn.device(x.device):
         for j in range(k):
-            if blocks_full:
-                _lu_find_pivot_main_kernel[(batch * blocks_full,)](
-                    lu,
-                    partial_values,
-                    partial_rows,
-                    m,
-                    n,
-                    k,
-                    j,
-                    BLOCKS=blocks_full,
-                    BLOCK_P=block_p,
-                    num_warps=4,
-                )
-            if tail:
-                _lu_find_pivot_tail_kernel[(batch,)](
-                    lu,
-                    partial_values,
-                    partial_rows,
-                    m,
-                    n,
-                    k,
-                    j,
-                    TAIL_START=blocks_full * 64,
-                    BLOCK_M=tail,
-                    SLOT=blocks_full,
-                    BLOCK_P=block_p,
-                    num_warps=4,
-                )
-            _lu_finish_pivot_kernel[(batch,)](
-                partial_values,
-                partial_rows,
-                pivot_log,
-                k,
-                j,
-                BLOCK_P=block_p,
-                num_warps=4,
-            )
-            swap_blocks = triton.cdiv(n, 64)
-            _lu_swap_rows_kernel[(batch * swap_blocks,)](
-                lu,
-                pivot_log,
+            _lu_find_pivot_kernel[(batch,)](
+                work,
+                pivots,
                 m,
                 n,
+                k,
+                j,
+                m2,
+                n2,
+                num_warps=4,
+            )
+            swap_blocks = triton.cdiv(n2, 64)
+            _lu_swap_rows_kernel[(batch * swap_blocks,)](
+                work,
+                pivots,
+                m2,
+                n2,
                 k,
                 j,
                 BLOCKS=swap_blocks,
                 BLOCK_N=64,
                 num_warps=4,
             )
-            if j + 1 < m:
-                scale_blocks = triton.cdiv(m - j - 1, 64)
-                _lu_scale_column_kernel[(batch * scale_blocks,)](
-                    lu,
-                    m,
-                    n,
-                    j,
-                    BLOCKS=scale_blocks,
-                    BLOCK_M=64,
-                    num_warps=4,
-                )
-            if j + 1 < m and j + 1 < n:
-                trailing_rows = m - j - 1
-                trailing_blocks = triton.cdiv(n - j - 1, 128)
-                _lu_update_trailing_kernel[(batch * trailing_rows * trailing_blocks,)](
-                    lu,
-                    m,
-                    n,
-                    j,
-                    ROWS=trailing_rows,
-                    BLOCKS=trailing_blocks,
-                    BLOCK_N=128,
-                    num_warps=4,
-                )
-    pivots.copy_(pivot_log)
-    return lu, pivots
+            scale_blocks = triton.cdiv(m2 - j - 1, 64)
+            _lu_scale_column_kernel[(batch * scale_blocks,)](
+                work,
+                m2,
+                n2,
+                j,
+                BLOCKS=scale_blocks,
+                BLOCK_M=64,
+                num_warps=4,
+            )
+            trailing_blocks = triton.cdiv(n2 - j - 1, 128)
+            _lu_update_trailing_kernel[(batch * (m2 - j - 1) * trailing_blocks,)](
+                work,
+                m2,
+                n2,
+                j,
+                ROWS=m2 - j - 1,
+                BLOCKS=trailing_blocks,
+                BLOCK_N=128,
+                num_warps=4,
+            )
+    lu = work[:, :m, :n].contiguous().reshape(x.shape)
+    return lu, pivots.reshape(x.shape[:-2] + (k,))
 
 
 def linalg_lu_factor(input, *, pivot=True):
