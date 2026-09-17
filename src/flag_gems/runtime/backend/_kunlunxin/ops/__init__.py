@@ -38,12 +38,14 @@ from ._is_all_true import _is_all_true
 from ._jagged_to_padded_dense_forward import (  # noqa: F401
     _jagged_to_padded_dense_forward,
 )
+from ._masked_scale import _masked_scale
 from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functional
 from ._native_batch_norm_legit_no_training import _native_batch_norm_legit_no_training
 from ._nested_view_from_buffer_copy import _nested_view_from_buffer_copy
 from ._pdist_backward import _pdist_backward
 from ._pdist_forward import _pdist_forward, pdist
 from ._prelu_kernel import _prelu_kernel  # noqa: F401
+from ._prelu_kernel_backward import _prelu_kernel_backward  # noqa: F401
 from ._scaled_dot_product_fused_attention_overrideable import (
     _scaled_dot_product_fused_attention_overrideable,
 )
@@ -270,6 +272,7 @@ from .im2col import im2col
 from .index import index
 from .index_add import index_add, index_add_
 from .index_copy_ import index_copy_
+from .index_fill import index_fill, index_fill_
 from .index_put import index_put, index_put_
 from .index_put_impl import _index_put_impl_
 from .index_reduce import index_reduce_
@@ -359,6 +362,7 @@ from .median import median, median_dim, median_dim_values, median_out
 from .min import min, min_dim
 from .minimum import minimum
 from .miopen_batch_norm_backward import miopen_batch_norm_backward
+from .mish import mish, mish_
 from .mish_backward import mish_backward
 from .mm import mm, mm_out
 from .mode import mode
@@ -634,11 +638,13 @@ __all__ = [
     "_fused_adam_",
     "_index_put_impl_",
     "_is_all_true",
+    "_masked_scale",
     "_native_batch_norm_legit_functional",
     "_native_batch_norm_legit_no_training",
     "_nested_view_from_buffer_copy",
     "_pdist_backward",
     "_pdist_forward",
+    "_prelu_kernel_backward",
     "_safe_softmax",
     "_scaled_dot_product_fused_attention_overrideable",
     "_segment_reduce_backward",
@@ -875,6 +881,8 @@ __all__ = [
     "gelu",
     "gelu_",
     "gelu_backward",
+    "geometric",
+    "geometric_",
     "get_paged_mqa_logits_metadata",
     "get_scheduler_metadata",
     "glu",
@@ -907,6 +915,8 @@ __all__ = [
     "index_add",
     "index_add_",
     "index_copy_",
+    "index_fill",
+    "index_fill_",
     "index_put",
     "index_put_",
     "index_reduce_",
@@ -1025,6 +1035,8 @@ __all__ = [
     "min_dim",
     "minimum",
     "miopen_batch_norm_backward",
+    "mish",
+    "mish_",
     "mish_backward",
     "mm",
     "mm_out",
