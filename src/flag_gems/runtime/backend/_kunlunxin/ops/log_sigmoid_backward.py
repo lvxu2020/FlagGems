@@ -31,15 +31,15 @@ def log_sigmoid_backward_kernel(grad_output, self):
     # log_sigmoid_forward on XPU cannot be trusted (the autograd test exercises
     # a full-size garbage buffer returned by the native forward).
     #
-    # The two-branch form `where(x < 0, 1 / (1 + z), z / (1 + z))` evaluates
-    # BOTH divisions (SIMT), and XPU division is expensive (~150us per 16M
-    # fp32 division over the mul floor). Hoisting the shared denominator into
-    # a single reciprocal is mathematically identical:
-    #   sigmoid(-x) = where(x < 0, 1, z) * (1 / (1 + z)),  z = exp(-|x|)
+    # The previous form `where(x < 0, 1, z) * (1 / (1 + z))` with z = exp(-|x|)
+    # lowered to a full-precision `arith.divf` + `select` (XPU division is
+    # ~1.9x the cost of a fused sigmoid; profiled kernel = 92% of op time).
+    # The XPU backend's Vectorize pass pattern-matches
+    # `1 / (1 + exp(-y))` (with exp's input an `0 - y` subtraction) into a
+    # single native `vsigmoidf` vector op, so writing sigmoid(-x) explicitly
+    # as `tl.sigmoid(0.0 - x)` removes the division and the select entirely.
     self_fp32 = self.to(tl.float32)
-    z = tl.exp(-tl.abs(self_fp32))
-    r = 1.0 / (1.0 + z)
-    derivative = tl.where(self_fp32 < 0.0, 1.0, z) * r
+    derivative = tl.sigmoid(0.0 - self_fp32)
     return grad_output * derivative
 
 
