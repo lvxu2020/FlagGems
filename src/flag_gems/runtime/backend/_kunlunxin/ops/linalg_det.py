@@ -31,6 +31,13 @@ _MAX_GROUP_TOT = 2048
 # (bit-exact and stable for batch <= 8, deterministically corrupt from 16).
 _ELIM_MIN_TOT = 1024
 _ELIM_SMALL_MAX_BATCH = 4
+# The nblk > 1 paths (n >= 128) run one swap+update pair per elimination step,
+# i.e. 2 launches per k -- 257/513 launches for n = 128/256, most of them
+# per-launch-dispatch-bound (measured: n = 128 / batch 1 spends ~4.7 ms on the
+# pair loop against a ~2.6 ms chunked single-launch-per-step loop; the
+# crossover with the in-place pair is between batch 4 and 8 at n = 128 and
+# before batch 2 at n = 256, where the chunked kernel's doubled traffic wins).
+_CHUNKED_STEP_MAX_BATCH = 2
 
 
 @libentry()
@@ -472,6 +479,50 @@ def _det_update_kernel(
 
 @libentry()
 @triton.jit
+def _det_step_chunked_kernel(
+    SRC, DST, DG, N, K, LDA: tl.constexpr, BLK: tl.constexpr, TOT: tl.constexpr
+):
+    """One elimination step, one program per (matrix, BLK-lane chunk).
+
+    Pivot scan, value-level row swap and the trailing rank-1 update are fused
+    into a single launch, and the scan is recomputed by every chunk program (a
+    [LDA]-lane reduction, cheap next to the launch it saves).  Chunks of one
+    matrix run in separate programs, so the kernel must not write the buffer it
+    reads -- a later chunk would gather a row an earlier chunk has already
+    overwritten -- hence SRC is read-only for the launch, DST is written only
+    and the caller ping-pongs the two work buffers across K (same pattern as
+    ``_det_update_group_kernel``).  The arithmetic is identical to
+    ``_det_step_kernel`` (which owns the whole matrix in one program) and the
+    pre-swap loads of rows K / prow are what make the swap value-level.
+    """
+    b = tle.program_id(0).to(tl.int64)
+    blk = tle.program_id(1).to(tl.int64)
+    base = b * TOT
+    e = blk * BLK + tl.arange(0, BLK)
+    row = e // LDA
+    col = e % LDA
+    ridx = tl.arange(0, LDA)
+    col_k_sp = tl.load(SRC + base + ridx * LDA + K)
+    cand = tl.where((ridx >= K) & (ridx < N), tl.abs(col_k_sp), -1.0)
+    best = tl.max(cand, axis=0)
+    prow = tl.min(tl.where(cand == best, ridx, LDA), axis=0)
+    akk = tl.sum(tl.where(ridx == K, col_k_sp, 0.0), axis=0)
+    apk = tl.sum(tl.where(ridx == prow, col_k_sp, 0.0), axis=0)
+    w = tl.load(SRC + base + e)
+    row_k = tl.load(SRC + base + K * LDA + col)
+    row_p = tl.load(SRC + base + prow * LDA + col)
+    col_k = tl.load(SRC + base + row * LDA + K)
+    swapped = tl.where(row == K, row_p, tl.where(row == prow, row_k, w))
+    lcol = tl.where(row == K, apk, tl.where(row == prow, akk, col_k))
+    safe = tl.where(apk == 0.0, 1.0, apk)
+    mult = tl.where(row > K, lcol / safe, 0.0)
+    urow = tl.where(col > K, row_p, 0.0)
+    tl.store(DST + base + e, swapped - mult * urow)
+    tl.store(DG + b * LDA + K, tl.where(prow != K, -apk, apk))
+
+
+@libentry()
+@triton.jit
 def _det_reduce_kernel(DG, OUT, N, LDA: tl.constexpr):
     b = tle.program_id(0).to(tl.int64)
     cols = tl.arange(0, LDA)
@@ -641,14 +692,26 @@ def _launch_det(A_work, out, batch_count, n, dtype, device):
                     work, dg, n, k, LDA=lda, TOT=tot, num_warps=1
                 )
         else:
-            for k in range(n):
-                _det_pivot_swap_kernel[(batch_count,)](
-                    work, dg, n, k, LDA=lda, ROWS=rows, num_warps=1
-                )
-                if k + 1 < n:
-                    _det_update_kernel[(batch_count, nblk)](
-                        work, n, k, LDA=lda, BLK=blk, TOT=tot, num_warps=1
+            if batch_count <= _CHUNKED_STEP_MAX_BATCH:
+                # n >= 128 (nblk > 1) with a tiny batch: one launch per step
+                # instead of the swap+update pair, at the cost of double
+                # buffering (see _CHUNKED_STEP_MAX_BATCH).
+                spare = torch.empty(batch_count * tot, dtype=dtype, device=device)
+                src, dst = work, spare
+                for k in range(n):
+                    _det_step_chunked_kernel[(batch_count, nblk)](
+                        src, dst, dg, n, k, LDA=lda, BLK=blk, TOT=tot, num_warps=1
                     )
+                    src, dst = dst, src
+            else:
+                for k in range(n):
+                    _det_pivot_swap_kernel[(batch_count,)](
+                        work, dg, n, k, LDA=lda, ROWS=rows, num_warps=1
+                    )
+                    if k + 1 < n:
+                        _det_update_kernel[(batch_count, nblk)](
+                            work, n, k, LDA=lda, BLK=blk, TOT=tot, num_warps=1
+                        )
         _det_reduce_kernel[(batch_count,)](dg, out, n, LDA=lda, num_warps=1)
 
 
